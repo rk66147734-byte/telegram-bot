@@ -20,13 +20,13 @@ BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
 ADMIN_USER_IDS = "7097197639"
 try:
     from dotenv import load_dotenv
-    from telegram import ReplyKeyboardMarkup, Update
-    from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+    from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
     DEPENDENCIES_AVAILABLE = True
 except ModuleNotFoundError:  # Lets the pure SQLite tests run before package installation.
     DEPENDENCIES_AVAILABLE = False
     Update = object
-    Application = CommandHandler = ContextTypes = MessageHandler = filters = ReplyKeyboardMarkup = None
+    Application = CallbackQueryHandler = CommandHandler = ContextTypes = MessageHandler = filters = ReplyKeyboardMarkup = InlineKeyboardButton = InlineKeyboardMarkup = None
 
     def load_dotenv(*_args, **_kwargs):
         return False
@@ -122,12 +122,19 @@ class ClaimStore:
         with self.session() as db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS members (
-
                     user_id INTEGER PRIMARY KEY,
                     user_name TEXT NOT NULL,
-                    joined_at TEXT NOT NULL
+                    joined_at TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'member',
+                    status TEXT NOT NULL DEFAULT 'active'
                 )
             """)
+            member_columns = {row["name"] for row in db.execute("PRAGMA table_info(members)")}
+            if "role" not in member_columns:
+                db.execute("ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'member'")
+            if "status" not in member_columns:
+                db.execute("ALTER TABLE members ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+
             db.execute("""
                 CREATE TABLE IF NOT EXISTS claims (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,59 +156,48 @@ class ClaimStore:
             if "screenshot_file_id" not in columns:
                 db.execute("ALTER TABLE claims ADD COLUMN screenshot_file_id TEXT")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_claim_key ON claims(facebook_key) WHERE released_at IS NULL")
-    def list_members(self):
-        try:
-            rows = self.conn.execute(
-                "SELECT user_id, username, full_name, COALESCE(status, 'active') "
-                "FROM members ORDER BY user_id"
-            ).fetchall()
-            return [
-                {"user_id": r[0], "username": r[1], "full_name": r[2], "status": r[3]}
-                for r in rows
-            ]
-        except Exception:
-            rows = self.conn.execute(
-                "SELECT user_id, username, full_name FROM members ORDER BY user_id"
-            ).fetchall()
-            return [
-                {"user_id": r[0], "username": r[1], "full_name": r[2], "status": "active"}
-                for r in rows
-            ]
 
-    def set_member_status(self, user_id, status):
-        self.conn.execute(
-            "UPDATE members SET status = ? WHERE user_id = ?",
-            (status, user_id),
-        )
-        self.conn.commit()
-
-    def member_status(self, user_id):
-        try:
-            row = self.conn.execute(
-                "SELECT COALESCE(status, 'active') FROM members WHERE user_id = ?",
-                (user_id,),
-            ).fetchone()
-            return row[0] if row else None
-        except Exception:
-            return None
-
-
-
-    def add_member(self, user_id: int, name: str) -> None:
+    def add_member(self, user_id: int, name: str, role: str = "member") -> None:
         with self.session() as db:
             db.execute(
-                """INSERT INTO members (user_id, user_name, joined_at)
-                   VALUES (?, ?, ?)
-                   ON CONFLICT(user_id) DO UPDATE SET user_name = excluded.user_name""",
-                (user_id, name, utc_now()),
+                """INSERT INTO members (user_id, user_name, joined_at, role, status)
+                   VALUES (?, ?, ?, ?, 'active')
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       user_name = excluded.user_name,
+                       role = excluded.role""",
+                (user_id, name, utc_now(), role),
             )
 
     def is_member(self, user_id: int) -> bool:
         with self.session() as db:
             return db.execute(
-                "SELECT 1 FROM members WHERE user_id = ?",
+                "SELECT 1 FROM members WHERE user_id = ? AND status = 'active'",
                 (user_id,),
             ).fetchone() is not None
+
+    def is_admin(self, user_id: int) -> bool:
+        with self.session() as db:
+            row = db.execute(
+                "SELECT role, status FROM members WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return bool(row and row["role"] == "admin" and row["status"] == "active")
+
+    def set_member_status(self, user_id: int, status: str) -> None:
+        with self.session() as db:
+            db.execute("UPDATE members SET status = ? WHERE user_id = ?", (status, user_id))
+
+    def list_members(self) -> list[sqlite3.Row]:
+        with self.session() as db:
+            return db.execute(
+                "SELECT user_id, user_name, joined_at, role, status FROM members ORDER BY joined_at DESC"
+            ).fetchall()
+
+    def active_member_count(self) -> int:
+        with self.session() as db:
+            return db.execute(
+                "SELECT COUNT(*) FROM members WHERE status = 'active'"
+            ).fetchone()[0]
 
     def claim(self, key: str, original: str, user_id: int, name: str, profile_name: str = "", screenshot_file_id: str = "") -> tuple[bool, sqlite3.Row]:
         try:
@@ -298,35 +294,34 @@ def authorized(settings: Settings, update: Update, admin: bool = False) -> bool:
 
 def is_admin(context: ContextTypes.DEFAULT_TYPE, update: Update) -> bool:
     user = update.effective_user
-    return bool(user and user.id in context.application.bot_data["settings"].admins)
-
+    if not user:
+        return False
+    settings: Settings = context.application.bot_data["settings"]
+    store: ClaimStore = context.application.bot_data["store"]
+    return user.id in settings.admins or store.is_admin(user.id)
 
 def require_member(context: ContextTypes.DEFAULT_TYPE, update: Update) -> bool:
     user = update.effective_user
     if not user:
         return False
-    if is_admin(context, update):
-        return True
-    return context.application.bot_data["store"].is_member(user.id)
+    return is_admin(context, update) or context.application.bot_data["store"].is_member(user.id)
 
 def main_menu(context=None, update=None):
-    rows = [[NEW_CLAIM, SEARCH], [HISTORY, HELP]]
+    rows = [[HISTORY, HELP]]
     if context is not None and update is not None and is_admin(context, update):
         rows.append([ADMIN_PANEL])
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,
-        input_field_placeholder="নিচের একটি button চাপুন",
+        input_field_placeholder="History অথবা Admin Panel চাপুন",
     )
-
 
 def claim_menu():
     return ReplyKeyboardMarkup(
-        [[SAVE_CLAIM, CANCEL_CLAIM], [NEW_CLAIM, SEARCH], [HISTORY, HELP]],
+        [[SAVE_CLAIM, CANCEL_CLAIM], [HISTORY, HELP]],
         resize_keyboard=True,
-        input_field_placeholder="তথ্য পাঠান অথবা Save Client চাপুন",
+        input_field_placeholder="Client-এর তথ্য পাঠান অথবা Save Client চাপুন",
     )
-
 
 async def reject(update: Update, text: str = "You are not authorised to use this command.") -> None:
     await update.effective_message.reply_text(text)
@@ -389,24 +384,27 @@ async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     code = command_arg(update).strip()
-    if not code:
+    store: ClaimStore = context.application.bot_data["store"]
+
+    if code == ADMIN_JOIN_CODE:
+        store.add_member(user.id, display_name(update), "admin")
         await update.effective_message.reply_text(
-            "ℹ️ এখন /start দিলেই automatically team-এ join হয়ে যাবেন।\n"
-            "অথবা code ব্যবহার করতে: /join myteam2026"
+            "👑 Admin join successful!\n\nআপনি এখন Admin এবং সবার History দেখতে পারবেন।",
+            reply_markup=main_menu(context, update),
         )
         return
 
-    if code != TEAM_JOIN_CODE:
-        await update.effective_message.reply_text("❌ Join code ভুল। সঠিক code দিয়ে আবার চেষ্টা করুন।")
+    if code == TEAM_JOIN_CODE:
+        store.add_member(user.id, display_name(update), "member")
+        await update.effective_message.reply_text(
+            "✅ Team join successful!",
+            reply_markup=main_menu(context, update),
+        )
         return
 
-    store: ClaimStore = context.application.bot_data["store"]
-    store.add_member(user.id, display_name(update))
     await update.effective_message.reply_text(
-        "✅ আপনি সফলভাবে team-এ add হয়েছেন। এখন /start চাপুন।",
-        reply_markup=main_menu(context, update),
+        "❌ Code ভুল। 🔐 Join Team চাপুন এবং সঠিক Team Code দিন।"
     )
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     store: ClaimStore = context.application.bot_data["store"]
@@ -415,19 +413,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if is_admin(context, update):
-        store.add_member(user.id, display_name(update))
-        message = "👑 Admin Access Active!\n\nআপনার Admin Panel এবং পুরো History access চালু আছে।"
+        store.add_member(user.id, display_name(update), "admin")
+        message = "👑 Admin Access Active!\n\nAdmin Panel এবং সবার History access চালু আছে।"
         markup = main_menu(context, update)
     elif store.is_member(user.id):
-        message = "Ready! নিচের button চাপুন।"
+        message = "✅ আপনি team-এর member।"
         markup = main_menu(context, update)
     else:
         message = (
             "👋 Welcome!\n\n"
             "আপনি এখনও team-এ registered নন।\n"
-            "🔐 Join Team চাপুন এবং Admin-এর দেওয়া join code দিন।\n\n"
-            "অথবা সরাসরি লিখতে পারেন:\n"
-            "/join myteam2026"
+            "🔐 Join Team চাপুন, তারপর Team Code দিন।"
         )
         markup = ReplyKeyboardMarkup(
             [[JOIN_TEAM]],
@@ -437,32 +433,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.effective_message.reply_text(message, reply_markup=markup)
 
-
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_admin(context, update):
         await reject(update, "❌ এই section শুধু Admin-এর জন্য।")
         return
 
     store: ClaimStore = context.application.bot_data["store"]
+    active = store.active_member_count()
+    total = len(store.list_members())
     rows = store.recent_all(50)
 
-    if not rows:
-        body = "📜 এখনো কোনো claim history নেই।"
-    else:
-        body = "📜 Latest 50 Claims / সর্বশেষ ৫০টি History\n\n" + "\n\n".join(
-            row_text(row) for row in rows
-        )
-
     await update.effective_message.reply_text(
-        "👑 ADMIN PANEL\n\n" + body,
-        reply_markup=main_menu(context, update),
+        f"👑 ADMIN PANEL\n\n👥 Active Users: {active}\n👤 Total Registered: {total}\n📜 History Records: {len(rows)}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📜 History — সবার", callback_data="admin_history")],
+            [InlineKeyboardButton("👥 Active Users / Ban-Control", callback_data="admin_users")],
+        ]),
     )
-
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not require_member(context, update):
-        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
+        await reject(update, "আপনি registered নন। আগে 🔐 Join Team চাপুন এবং Team Code দিন।")
         return
     extra = "\nAdmins: /release <claim number>" if update.effective_user.id in settings.admins else ""
     await update.effective_message.reply_text("➕ নতুন Client চাপুন, তারপর নাম/link লিখুন বা screenshot পাঠান।\n🔍 খুঁজুন চাপুন, তারপর client-এর নাম, Facebook ID বা link লিখুন। Search পুরো database-এ duplicate check করবে।\n📜 History চাপুন: প্রত্যেক member শুধু নিজের claim history দেখবে; admin সব claim দেখতে পারবে." + extra, reply_markup=main_menu(context, update))
@@ -497,7 +489,7 @@ async def photo_claim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def save_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, screenshot_file_id: str = "", original: str | None = None) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not require_member(context, update):
-        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
+        await reject(update, "আপনি registered নন। আগে 🔐 Join Team চাপুন এবং Team Code দিন।")
         return
     original = command_arg(update) if original is None else original
     try:
@@ -516,35 +508,37 @@ async def save_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, screens
 
 
 async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Button-driven flow, including smart join for new users."""
-    text = update.effective_message.text.strip()
+    text = (update.effective_message.text or "").strip()
 
-    # New users must use the join code; they are not auto-registered.
     if text == JOIN_TEAM:
         context.user_data["waiting_for"] = "join_code"
         await update.effective_message.reply_text(
-            "🔐 Join Team\n\n"
-            "Admin-এর দেওয়া join code লিখে Send করুন।\n"
-            "উদাহরণ: myteam2026"
+            "🔐 Join Team\n\nTeam Code দিন এবং Send করুন."
         )
         return
 
     if context.user_data.get("waiting_for") == "join_code":
-        code = text.strip()
-        if code == TEAM_JOIN_CODE:
-            store = context.application.bot_data["store"]
-            store.add_member(update.effective_user.id, display_name(update))
+        store: ClaimStore = context.application.bot_data["store"]
+
+        if text == ADMIN_JOIN_CODE:
+            store.add_member(update.effective_user.id, display_name(update), "admin")
             context.user_data.pop("waiting_for", None)
             await update.effective_message.reply_text(
-                "✅ Join successful!\n\n"
-                "আপনি এখন team-এর member।",
+                "👑 Admin join successful!\n\nআপনি এখন Admin এবং সবার History দেখতে পারবেন।",
                 reply_markup=main_menu(context, update),
             )
-        else:
+            return
+
+        if text == TEAM_JOIN_CODE:
+            store.add_member(update.effective_user.id, display_name(update), "member")
+            context.user_data.pop("waiting_for", None)
             await update.effective_message.reply_text(
-                "❌ Join code ভুল।\n\n"
-                "সঠিক code দিয়ে আবার চেষ্টা করুন।"
+                "✅ Join successful!\n\nআপনি এখন team-এর member।",
+                reply_markup=main_menu(context, update),
             )
+            return
+
+        await update.effective_message.reply_text("❌ Code ভুল। আবার সঠিক Team Code দিন।")
         return
 
     settings: Settings = context.application.bot_data["settings"]
@@ -656,7 +650,7 @@ async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not require_member(context, update):
-        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
+        await reject(update, "আপনি registered নন। আগে 🔐 Join Team চাপুন এবং Team Code দিন।")
         return
     term = command_arg(update)
     if not term:
@@ -669,7 +663,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not require_member(context, update):
-        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
+        await reject(update, "আপনি registered নন। আগে 🔐 Join Team চাপুন এবং Team Code দিন।")
         return
 
     store: ClaimStore = context.application.bot_data["store"]
@@ -705,6 +699,95 @@ async def release_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     changed = context.application.bot_data["store"].release(claim_id, update.effective_user.id, display_name(update))
     await update.effective_message.reply_text("Claim released; its history was kept." if changed else "Active claim not found.")
+
+
+
+async def admin_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(context, update):
+        await update.callback_query.answer("Admin only.", show_alert=True)
+        return
+    query = update.callback_query
+    await query.answer()
+    rows = context.application.bot_data["store"].recent_all(50)
+    if not rows:
+        await query.edit_message_text("📜 এখনো কোনো claim history নেই।")
+        return
+    await query.edit_message_text(
+        "📜 Latest 50 Claims / সর্বশেষ ৫০টি History\n\n"
+        + "\n\n".join(row_text(row) for row in rows)
+    )
+
+
+async def admin_users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(context, update):
+        await update.callback_query.answer("Admin only.", show_alert=True)
+        return
+    query = update.callback_query
+    await query.answer()
+    store = context.application.bot_data["store"]
+    members = store.list_members()
+    lines = [
+        f"👥 Active Users: {store.active_member_count()}",
+        f"👤 Total Registered: {len(members)}",
+        "",
+    ]
+    keyboard = []
+
+    for member in members[:50]:
+        uid = member["user_id"]
+        name = member["user_name"] or str(uid)
+        role = member["role"]
+        status = member["status"]
+        icon = "👑" if role == "admin" else ("🚫" if status == "banned" else "👤")
+        lines.append(f"{icon} {name} — {uid} — {status}")
+
+        if uid != update.effective_user.id and role != "admin":
+            action = "unban" if status == "banned" else "ban"
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"{'✅ Unban' if action == 'unban' else '🚫 Ban'} {name[:20]}",
+                    callback_data=f"admin_{action}_{uid}",
+                )
+            ])
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
+    )
+
+
+async def admin_user_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(context, update):
+        await update.callback_query.answer("Admin only.", show_alert=True)
+        return
+
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split("_", 2)
+    if len(parts) != 3:
+        return
+
+    action, raw_uid = parts[1], parts[2]
+    try:
+        uid = int(raw_uid)
+    except ValueError:
+        return
+
+    store = context.application.bot_data["store"]
+
+    if uid == update.effective_user.id:
+        await query.answer("নিজেকে ban করা যাবে না।", show_alert=True)
+        return
+    if store.is_admin(uid):
+        await query.answer("Admin account ban করা যাবে না।", show_alert=True)
+        return
+
+    if action == "ban":
+        store.set_member_status(uid, "banned")
+        await query.edit_message_text(f"🚫 User {uid} banned.")
+    elif action == "unban":
+        store.set_member_status(uid, "active")
+        await query.edit_message_text(f"✅ User {uid} unbanned.")
 
 
 def load_settings() -> Settings:
@@ -747,8 +830,9 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_input))
 
     logging.info("Bot is starting. Press Ctrl+C to stop.")
-    app.add_handler(CommandHandler("adminusers", admin_users))
-    app.add_handler(CallbackQueryHandler(admin_user_action, pattern=r"^admin_(ban|unban)_\\d+$"))
+    app.add_handler(CallbackQueryHandler(admin_history_callback, pattern=r"^admin_history$"))
+    app.add_handler(CallbackQueryHandler(admin_users_callback, pattern=r"^admin_users$"))
+    app.add_handler(CallbackQueryHandler(admin_user_action, pattern=r"^admin_(ban|unban)_\d+$"))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
