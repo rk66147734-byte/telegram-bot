@@ -570,6 +570,10 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_input))
     logging.info("Bot is starting. Press Ctrl+C to stop.")
     # Python 3.14 no longer creates an event loop automatically in the main thread.
+    
+    
+    
+    
    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
