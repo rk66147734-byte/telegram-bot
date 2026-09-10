@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-TEAM_TEAM_JOIN_CODE = "myteam2026"
+TEAM_TEAM_JOIN_CODE = "0scam"
 ADMIN_JOIN_CODE = "km195770"
 
 BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
@@ -423,7 +423,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = (
             "👋 Welcome!\n\n"
             "আপনি এখনও team-এ registered নন।\n"
-            "🔐 Join Team চাপুন, তারপর Team Code দিন।"
+            "🔐 শুধু Team Code পাঠালেই login হয়ে যাবে।"
         )
         markup = ReplyKeyboardMarkup(
             [[JOIN_TEAM]],
@@ -509,6 +509,31 @@ async def save_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, screens
 
 async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.effective_message.text or "").strip()
+
+    # Easy join: users can simply send the code directly.
+    # No Join Team button and no /join command are required.
+    store: ClaimStore = context.application.bot_data["store"]
+    user = update.effective_user
+
+    if user and text == ADMIN_JOIN_CODE:
+        store.add_member(user.id, display_name(update), "admin")
+        context.user_data.pop("waiting_for", None)
+        await update.effective_message.reply_text(
+            "👑 Admin login successful!\n\n"
+            "আপনি এখন Admin এবং সবার History দেখতে পারবেন।",
+            reply_markup=main_menu(context, update),
+        )
+        return
+
+    if user and text == TEAM_JOIN_CODE and not store.is_member(user.id):
+        store.add_member(user.id, display_name(update), "member")
+        context.user_data.pop("waiting_for", None)
+        await update.effective_message.reply_text(
+            "✅ Login successful!\n\n"
+            "আপনি এখন Team-এর member।",
+            reply_markup=main_menu(context, update),
+        )
+        return
 
     if text == JOIN_TEAM:
         context.user_data["waiting_for"] = "join_code"
