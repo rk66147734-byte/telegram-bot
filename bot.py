@@ -13,11 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-JOIN_CODE = "myteam2026"
+TEAM_TEAM_JOIN_CODE = "myteam2026"
+ADMIN_JOIN_CODE = "km195770"
 
-BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
-
-ADMIN_USER_IDS = "7097197639"
+BOT_TOKEN = ""
+ADMIN_USER_IDS = ""
 try:
     from dotenv import load_dotenv
     from telegram import ReplyKeyboardMarkup, Update
@@ -35,11 +35,13 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "claims.db"
 # New users must send this code with /join <code> to register.
 # Change this value to your own private code before deployment.
-JOIN_CODE = "myteam2026"
+
 NEW_CLAIM = "➕ নতুন Client"
 SEARCH = "🔍 খুঁজুন"
 HISTORY = "📜 History"
 HELP = "❓ সাহায্য"
+ADMIN_PANEL = "👑 Admin Panel"
+JOIN_TEAM = "🔐 Join Team"
 SAVE_CLAIM = "✅ Save Client"
 CANCEL_CLAIM = "✖ বাতিল"
 
@@ -256,12 +258,25 @@ def authorized(settings: Settings, update: Update, admin: bool = False) -> bool:
     return user.id in settings.admins if admin else True
 
 
-def require_member(context: ContextTypes.DEFAULT_TYPE, update: Update) -> bool:
-    return context.application.bot_data["store"].is_member(update.effective_user.id)
+def is_admin(context: ContextTypes.DEFAULT_TYPE, update: Update) -> bool:
+    user = update.effective_user
+    return bool(user and user.id in context.application.bot_data["settings"].admins)
 
-def main_menu():
+
+def require_member(context: ContextTypes.DEFAULT_TYPE, update: Update) -> bool:
+    user = update.effective_user
+    if not user:
+        return False
+    if is_admin(context, update):
+        return True
+    return context.application.bot_data["store"].is_member(user.id)
+
+def main_menu(context=None, update=None):
+    rows = [[NEW_CLAIM, SEARCH], [HISTORY, HELP]]
+    if context is not None and update is not None and is_admin(context, update):
+        rows.append([ADMIN_PANEL])
     return ReplyKeyboardMarkup(
-        [[NEW_CLAIM, SEARCH], [HISTORY, HELP]],
+        rows,
         resize_keyboard=True,
         input_field_placeholder="নিচের একটি button চাপুন",
     )
@@ -337,10 +352,13 @@ async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     code = command_arg(update).strip()
     if not code:
-        await update.effective_message.reply_text("ব্যবহার: /join <join code>")
+        await update.effective_message.reply_text(
+            "ℹ️ এখন /start দিলেই automatically team-এ join হয়ে যাবেন।\n"
+            "অথবা code ব্যবহার করতে: /join myteam2026"
+        )
         return
 
-    if code != JOIN_CODE:
+    if code != TEAM_JOIN_CODE:
         await update.effective_message.reply_text("❌ Join code ভুল। সঠিক code দিয়ে আবার চেষ্টা করুন।")
         return
 
@@ -348,22 +366,58 @@ async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     store.add_member(user.id, display_name(update))
     await update.effective_message.reply_text(
         "✅ আপনি সফলভাবে team-এ add হয়েছেন। এখন /start চাপুন।",
-        reply_markup=main_menu(),
+        reply_markup=main_menu(context, update),
     )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     store: ClaimStore = context.application.bot_data["store"]
-    if not store.is_member(update.effective_user.id):
-        await update.effective_message.reply_text(
-            "আপনি এখনও team-এ registered নন।\n"
-            "Admin-এর দেওয়া join code দিয়ে লিখুন:\n"
-            "/join <join code>"
-        )
+    user = update.effective_user
+    if not user:
         return
+
+    if is_admin(context, update):
+        store.add_member(user.id, display_name(update))
+        message = "👑 Admin Access Active!\n\nআপনার Admin Panel এবং পুরো History access চালু আছে।"
+        markup = main_menu(context, update)
+    elif store.is_member(user.id):
+        message = "Ready! নিচের button চাপুন।"
+        markup = main_menu(context, update)
+    else:
+        message = (
+            "👋 Welcome!\n\n"
+            "আপনি এখনও team-এ registered নন।\n"
+            "🔐 Join Team চাপুন এবং Admin-এর দেওয়া join code দিন।\n\n"
+            "অথবা সরাসরি লিখতে পারেন:\n"
+            "/join myteam2026"
+        )
+        markup = ReplyKeyboardMarkup(
+            [[JOIN_TEAM]],
+            resize_keyboard=True,
+            input_field_placeholder="Join Team চাপুন",
+        )
+
+    await update.effective_message.reply_text(message, reply_markup=markup)
+
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(context, update):
+        await reject(update, "❌ এই section শুধু Admin-এর জন্য।")
+        return
+
+    store: ClaimStore = context.application.bot_data["store"]
+    rows = store.recent_all(50)
+
+    if not rows:
+        body = "📜 এখনো কোনো claim history নেই।"
+    else:
+        body = "📜 Latest 50 Claims / সর্বশেষ ৫০টি History\n\n" + "\n\n".join(
+            row_text(row) for row in rows
+        )
+
     await update.effective_message.reply_text(
-        "Ready! নিচের button চাপুন। তারপর bot যা চাইবে শুধু সেটি পাঠান।",
-        reply_markup=main_menu(),
+        "👑 ADMIN PANEL\n\n" + body,
+        reply_markup=main_menu(context, update),
     )
 
 
@@ -373,7 +427,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
         return
     extra = "\nAdmins: /release <claim number>" if update.effective_user.id in settings.admins else ""
-    await update.effective_message.reply_text("➕ নতুন Client চাপুন, তারপর নাম/link লিখুন বা screenshot পাঠান।\n🔍 খুঁজুন চাপুন, তারপর client-এর নাম, Facebook ID বা link লিখুন। Search পুরো database-এ duplicate check করবে।\n📜 History চাপুন: প্রত্যেক member শুধু নিজের claim history দেখবে; admin সব claim দেখতে পারবে." + extra, reply_markup=main_menu())
+    await update.effective_message.reply_text("➕ নতুন Client চাপুন, তারপর নাম/link লিখুন বা screenshot পাঠান।\n🔍 খুঁজুন চাপুন, তারপর client-এর নাম, Facebook ID বা link লিখুন। Search পুরো database-এ duplicate check করবে।\n📜 History চাপুন: প্রত্যেক member শুধু নিজের claim history দেখবে; admin সব claim দেখতে পারবে." + extra, reply_markup=main_menu(context, update))
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -424,43 +478,101 @@ async def save_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, screens
 
 
 async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Button-driven flow so teammates do not need to remember slash commands."""
+    """Button-driven flow, including smart join for new users."""
+    text = update.effective_message.text.strip()
+
+    # New users must use the join code; they are not auto-registered.
+    if text == JOIN_TEAM:
+        context.user_data["waiting_for"] = "join_code"
+        await update.effective_message.reply_text(
+            "🔐 Join Team\n\n"
+            "Admin-এর দেওয়া join code লিখে Send করুন।\n"
+            "উদাহরণ: myteam2026"
+        )
+        return
+
+    if context.user_data.get("waiting_for") == "join_code":
+        code = text.strip()
+        if code == TEAM_JOIN_CODE:
+            store = context.application.bot_data["store"]
+            store.add_member(update.effective_user.id, display_name(update))
+            context.user_data.pop("waiting_for", None)
+            await update.effective_message.reply_text(
+                "✅ Join successful!\n\n"
+                "আপনি এখন team-এর member।",
+                reply_markup=main_menu(context, update),
+            )
+        else:
+            await update.effective_message.reply_text(
+                "❌ Join code ভুল।\n\n"
+                "সঠিক code দিয়ে আবার চেষ্টা করুন।"
+            )
+        return
+
     settings: Settings = context.application.bot_data["settings"]
     if not require_member(context, update):
-        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
+        await reject(
+            update,
+            "🔒 আগে Join Team চাপুন এবং Admin-এর দেওয়া join code দিন।"
+        )
         return
-    text = update.effective_message.text.strip()
+
     if text == NEW_CLAIM:
         context.user_data["waiting_for"] = "collect_claim"
         context.user_data["draft"] = {"name": "", "link": "", "screenshot": ""}
         await update.effective_message.reply_text(
-            "এখন নাম, Facebook link বা screenshot—যেটা আছে পাঠান। একবারে সব দিতে হবে না। সব দেওয়া হলে ✅ Save Client চাপুন।",
+            "এখন নাম, Facebook link বা screenshot পাঠান।\n"
+            "তথ্য পেলেই client automatically save হবে এবং duplicate check হবে।",
             reply_markup=claim_menu(),
         )
         return
+
     if text == CANCEL_CLAIM:
         context.user_data.pop("waiting_for", None)
         context.user_data.pop("draft", None)
-        await update.effective_message.reply_text("নতুন client যোগ করা বাতিল হয়েছে।", reply_markup=main_menu())
+        await update.effective_message.reply_text(
+            "নতুন client যোগ করা বাতিল হয়েছে।",
+            reply_markup=main_menu(context, update),
+        )
         return
+
     if text == SAVE_CLAIM:
         draft = context.user_data.get("draft")
         if not draft:
-            await update.effective_message.reply_text("আগে ➕ নতুন Client চাপুন।", reply_markup=main_menu())
+            await update.effective_message.reply_text(
+                "আগে ➕ নতুন Client চাপুন।",
+                reply_markup=main_menu(context, update),
+            )
             return
-        original = "\n".join(part for part in (f"Name: {draft['name']}" if draft["name"] else "", draft["link"]) if part)
+        original = "\n".join(
+            part for part in (
+                f"Name: {draft['name']}" if draft["name"] else "",
+                draft["link"],
+            ) if part
+        )
         await save_claim(update, context, draft["screenshot"], original)
         return
+
     if text == SEARCH:
         context.user_data["waiting_for"] = "search"
-        await update.effective_message.reply_text("এখন client-এর নাম বা Facebook link লিখে Send করুন।", reply_markup=main_menu())
+        await update.effective_message.reply_text(
+            "এখন client-এর নাম বা Facebook link লিখে Send করুন。",
+            reply_markup=main_menu(context, update),
+        )
         return
+
     if text == HISTORY:
         await history_command(update, context)
         return
+
     if text == HELP:
         await help_command(update, context)
         return
+
+    if text == ADMIN_PANEL:
+        await admin_panel(update, context)
+        return
+
     waiting_for = context.user_data.get("waiting_for")
     if waiting_for == "collect_claim":
         draft = context.user_data["draft"]
@@ -469,14 +581,38 @@ async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             draft["name"] = name
         if link:
             draft["link"] = link
+
+        original = "\n".join(
+            part for part in (
+                f"Name: {draft['name']}" if draft["name"] else "",
+                draft["link"],
+            ) if part
+        )
+        if original or draft.get("screenshot"):
+            await save_claim(
+                update, context, draft.get("screenshot", ""), original or None
+            )
+            return
+
         await show_draft_status(update, context)
         return
+
     if waiting_for == "search":
         rows = context.application.bot_data["store"].search(text.lower())
-        await update.effective_message.reply_text("কোনো matching client পাওয়া যায়নি।" if not rows else "🔍 Search result / খোঁজার ফল\n\n" + "\n\n".join(search_result_text(row) for row in rows), reply_markup=main_menu())
+        await update.effective_message.reply_text(
+            "কোনো matching client পাওয়া যায়নি।"
+            if not rows
+            else "🔍 Search result / খোঁজার ফল\n\n"
+                 + "\n\n".join(search_result_text(row) for row in rows),
+            reply_markup=main_menu(context, update),
+        )
         context.user_data.pop("waiting_for", None)
         return
-    await update.effective_message.reply_text("নিচের button থেকে একটি বেছে নিন।", reply_markup=main_menu())
+
+    await update.effective_message.reply_text(
+        "নিচের button থেকে একটি বেছে নিন।",
+        reply_markup=main_menu(context, update),
+    )
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -508,14 +644,14 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         title = "📜 All History / সব History" if is_admin else "📜 My History / আমার claim history"
         await update.effective_message.reply_text(
             f"{title}\n\nকোনো claim পাওয়া যায়নি।",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(context, update),
         )
         return
 
     title = "📜 All History / সব History" if is_admin else "📜 My History / আমার claim history"
     await update.effective_message.reply_text(
         title + "\n\n" + "\n\n".join(row_text(row) for row in rows),
-        reply_markup=main_menu(),
+        reply_markup=main_menu(context, update),
     )
 
 
@@ -544,7 +680,7 @@ def load_settings() -> Settings:
         "🚫 Duplicate Client Alert / ডুপ্লিকেট ক্লায়েন্ট সতর্কতা\n\nএই client-টি আগে থেকেই {claimed_by}-এর নেওয়া আছে।\nThis client is already claimed by {claimed_by}.\n\n✨ দয়া করে নতুন client দিন / Please choose another client.",
     ).strip()
     if not token or token == "put_your_botfather_token_here":
-        raise RuntimeError("Set 8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk in your local .env file.")
+        raise RuntimeError("Set TELEGRAM_BOT_TOKEN in your local .env file.")
     # TEAM_MEMBER_IDS is kept for backward compatibility, but new members are stored in claims.db.
     return Settings(token, members, admins, int(chat_id) if chat_id else None, duplicate_message)
 
@@ -568,6 +704,7 @@ def main() -> None:
     app.add_handler(CommandHandler("claim", claim_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("release", release_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_input))
 
