@@ -1,5 +1,5 @@
 """Small private Telegram bot for preventing duplicate Facebook client claims."""
-GSM_TELEGRAM_BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
+
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
+
+JOIN_CODE = "myteam2026"
 
 try:
     from dotenv import load_dotenv
@@ -530,7 +534,7 @@ async def release_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 def load_settings() -> Settings:
     load_dotenv(BASE_DIR / ".env")
-    token = os.getenv("8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk", "").strip()
+    token = os.getenv("8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk", "").strip() or 8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk
     members = parse_id_list(os.getenv("TEAM_MEMBER_IDS", ""))
     admins = parse_id_list(os.getenv("7097197639", ""))
     chat_id = os.getenv("ALLOWED_CHAT_ID", "").strip()
