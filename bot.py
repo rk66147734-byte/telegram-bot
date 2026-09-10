@@ -16,8 +16,8 @@ from urllib.parse import urlparse
 TEAM_TEAM_JOIN_CODE = "myteam2026"
 ADMIN_JOIN_CODE = "km195770"
 
-BOT_TOKEN = ""
-ADMIN_USER_IDS = ""
+BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
+ADMIN_USER_IDS = "7097197639"
 try:
     from dotenv import load_dotenv
     from telegram import ReplyKeyboardMarkup, Update
