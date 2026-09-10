@@ -17,7 +17,7 @@ TEAM_TEAM_JOIN_CODE = "myteam2026"
 ADMIN_JOIN_CODE = "km195770"
 
 BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
-ADMIN_USER_IDS = "7097197639"
+ADMIN_USER_IDS = ""
 try:
     from dotenv import load_dotenv
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
@@ -307,7 +307,7 @@ def require_member(context: ContextTypes.DEFAULT_TYPE, update: Update) -> bool:
     return is_admin(context, update) or context.application.bot_data["store"].is_member(user.id)
 
 def main_menu(context=None, update=None):
-    rows = [[HISTORY, HELP]]
+    rows = [[HISTORY]]
     if context is not None and update is not None and is_admin(context, update):
         rows.append([ADMIN_PANEL])
     return ReplyKeyboardMarkup(
@@ -318,7 +318,7 @@ def main_menu(context=None, update=None):
 
 def claim_menu():
     return ReplyKeyboardMarkup(
-        [[SAVE_CLAIM, CANCEL_CLAIM], [HISTORY, HELP]],
+        [[SAVE_CLAIM, CANCEL_CLAIM], [HISTORY]],
         resize_keyboard=True,
         input_field_placeholder="Client-এর তথ্য পাঠান অথবা Save Client চাপুন",
     )
@@ -641,10 +641,16 @@ async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context.user_data.pop("waiting_for", None)
         return
 
-    await update.effective_message.reply_text(
-        "নিচের button থেকে একটি বেছে নিন।",
-        reply_markup=main_menu(context, update),
-    )
+    # Any ordinary text from a registered user is treated as client information.
+    # No "New Client" button is required.
+    try:
+        await save_claim(update, context, "", text)
+        return
+    except ValueError:
+        await update.effective_message.reply_text(
+            "Client-এর নাম অথবা Facebook link/ID পাঠান।"
+        )
+        return
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -667,20 +673,20 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     store: ClaimStore = context.application.bot_data["store"]
-    is_admin = update.effective_user.id in settings.admins
+    admin_access = is_admin(context, update)
 
     # Admins may review the team history; regular members can only see their own.
-    rows = store.recent_all(50) if is_admin else store.recent_for_user(update.effective_user.id, 20)
+    rows = store.recent_all(50) if admin_access else store.recent_for_user(update.effective_user.id, 20)
 
     if not rows:
-        title = "📜 All History / সব History" if is_admin else "📜 My History / আমার claim history"
+        title = "📜 All History / সব History" if admin_access else "📜 My History / আমার claim history"
         await update.effective_message.reply_text(
             f"{title}\n\nকোনো claim পাওয়া যায়নি।",
             reply_markup=main_menu(context, update),
         )
         return
 
-    title = "📜 All History / সব History" if is_admin else "📜 My History / আমার claim history"
+    title = "📜 All History / সব History" if admin_access else "📜 My History / আমার claim history"
     await update.effective_message.reply_text(
         title + "\n\n" + "\n\n".join(row_text(row) for row in rows),
         reply_markup=main_menu(context, update),
@@ -689,7 +695,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def release_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
-    if not authorized(settings, update, admin=True):
+    if not is_admin(context, update):
         await reject(update, "Only configured admins can release claims.")
         return
     try:
