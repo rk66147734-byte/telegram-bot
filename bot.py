@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-TEAM_JOIN_CODE = "myteam2026"
+TEAM_JOIN_CODE = "0scam"
 ADMIN_JOIN_CODE = "km195770"
 
 BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
