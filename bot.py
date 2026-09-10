@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-TEAM_TEAM_JOIN_CODE = "0scam"
+TEAM_JOIN_CODE = "myteam2026"
 ADMIN_JOIN_CODE = "km195770"
 
 BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
@@ -41,7 +41,6 @@ SEARCH = "🔍 খুঁজুন"
 HISTORY = "📜 History"
 HELP = "❓ সাহায্য"
 ADMIN_PANEL = "👑 Admin Panel"
-JOIN_TEAM = "🔐 Join Team"
 SAVE_CLAIM = "✅ Save Client"
 CANCEL_CLAIM = "✖ বাতিল"
 
@@ -423,13 +422,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = (
             "👋 Welcome!\n\n"
             "আপনি এখনও team-এ registered নন।\n"
-            "🔐 শুধু Team Code পাঠালেই login হয়ে যাবে।"
+            "🔐 শুধু Team Code পাঠান। সঠিক code হলে automatically login হয়ে যাবেন।"
         )
-        markup = ReplyKeyboardMarkup(
-            [[JOIN_TEAM]],
-            resize_keyboard=True,
-            input_field_placeholder="Join Team চাপুন",
-        )
+        markup = None
 
     await update.effective_message.reply_text(message, reply_markup=markup)
 
@@ -454,7 +449,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not require_member(context, update):
-        await reject(update, "আপনি registered নন। আগে 🔐 Join Team চাপুন এবং Team Code দিন।")
+        await reject(update, "আপনি registered নন। আগে সঠিক Team Code পাঠান।")
         return
     extra = "\nAdmins: /release <claim number>" if update.effective_user.id in settings.admins else ""
     await update.effective_message.reply_text("➕ নতুন Client চাপুন, তারপর নাম/link লিখুন বা screenshot পাঠান।\n🔍 খুঁজুন চাপুন, তারপর client-এর নাম, Facebook ID বা link লিখুন। Search পুরো database-এ duplicate check করবে।\n📜 History চাপুন: প্রত্যেক member শুধু নিজের claim history দেখবে; admin সব claim দেখতে পারবে." + extra, reply_markup=main_menu(context, update))
@@ -489,7 +484,7 @@ async def photo_claim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def save_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, screenshot_file_id: str = "", original: str | None = None) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not require_member(context, update):
-        await reject(update, "আপনি registered নন। আগে 🔐 Join Team চাপুন এবং Team Code দিন।")
+        await reject(update, "আপনি registered নন। আগে সঠিক Team Code পাঠান।")
         return
     original = command_arg(update) if original is None else original
     try:
@@ -533,37 +528,6 @@ async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "আপনি এখন Team-এর member।",
             reply_markup=main_menu(context, update),
         )
-        return
-
-    if text == JOIN_TEAM:
-        context.user_data["waiting_for"] = "join_code"
-        await update.effective_message.reply_text(
-            "🔐 Join Team\n\nTeam Code দিন এবং Send করুন."
-        )
-        return
-
-    if context.user_data.get("waiting_for") == "join_code":
-        store: ClaimStore = context.application.bot_data["store"]
-
-        if text == ADMIN_JOIN_CODE:
-            store.add_member(update.effective_user.id, display_name(update), "admin")
-            context.user_data.pop("waiting_for", None)
-            await update.effective_message.reply_text(
-                "👑 Admin join successful!\n\nআপনি এখন Admin এবং সবার History দেখতে পারবেন।",
-                reply_markup=main_menu(context, update),
-            )
-            return
-
-        if text == TEAM_JOIN_CODE:
-            store.add_member(update.effective_user.id, display_name(update), "member")
-            context.user_data.pop("waiting_for", None)
-            await update.effective_message.reply_text(
-                "✅ Join successful!\n\nআপনি এখন team-এর member।",
-                reply_markup=main_menu(context, update),
-            )
-            return
-
-        await update.effective_message.reply_text("❌ Code ভুল। আবার সঠিক Team Code দিন।")
         return
 
     settings: Settings = context.application.bot_data["settings"]
@@ -681,7 +645,7 @@ async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not require_member(context, update):
-        await reject(update, "আপনি registered নন। আগে 🔐 Join Team চাপুন এবং Team Code দিন।")
+        await reject(update, "আপনি registered নন। আগে সঠিক Team Code পাঠান।")
         return
     term = command_arg(update)
     if not term:
@@ -694,7 +658,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
     if not require_member(context, update):
-        await reject(update, "আপনি registered নন। আগে 🔐 Join Team চাপুন এবং Team Code দিন।")
+        await reject(update, "আপনি registered নন। আগে সঠিক Team Code পাঠান।")
         return
 
     store: ClaimStore = context.application.bot_data["store"]
@@ -847,7 +811,6 @@ def main() -> None:
 
     app.bot_data.update(settings=settings, store=store)
 
-    app.add_handler(CommandHandler("join", join_command))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("whoami", whoami))
