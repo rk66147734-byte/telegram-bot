@@ -552,34 +552,31 @@ def load_settings() -> Settings:
 def main() -> None:
     if not DEPENDENCIES_AVAILABLE:
         raise RuntimeError("Install the packages first: py -m pip install -r requirements.txt")
+
     settings = load_settings()
     store = ClaimStore(DB_PATH)
     app = Application.builder().token(settings.token).build()
+
     app.bot_data.update(settings=settings, store=store)
+
     app.add_handler(CommandHandler("join", join_command))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("chatid", chatid))
-    # Put photo handling before /claim so a captioned photo keeps its screenshot ID too.
     app.add_handler(MessageHandler(filters.PHOTO, photo_claim))
     app.add_handler(CommandHandler("claim", claim_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("release", release_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_input))
+
     logging.info("Bot is starting. Press Ctrl+C to stop.")
-    # Python 3.14 no longer creates an event loop automatically in the main thread.
-    
-    
-    
-    
-   app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    # Prevent request URLs (which contain the bot token) from being printed in the terminal.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
     main()
