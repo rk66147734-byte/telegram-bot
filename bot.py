@@ -17,7 +17,7 @@ JOIN_CODE = "myteam2026"
 
 BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
 
-ADMIN_USER_IDS = "123456789"
+ADMIN_USER_IDS = "7097197639"
 try:
     from dotenv import load_dotenv
     from telegram import ReplyKeyboardMarkup, Update
