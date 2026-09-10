@@ -13,10 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
-
 JOIN_CODE = "myteam2026"
 
+BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
+
+ADMIN_USER_IDS = "123456789"
 try:
     from dotenv import load_dotenv
     from telegram import ReplyKeyboardMarkup, Update
@@ -34,7 +35,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "claims.db"
 # New users must send this code with /join <code> to register.
 # Change this value to your own private code before deployment.
-JOIN_CODE = "CHANGE_THIS_JOIN_CODE"
+JOIN_CODE = "myteam2026"
 NEW_CLAIM = "➕ নতুন Client"
 SEARCH = "🔍 খুঁজুন"
 HISTORY = "📜 History"
@@ -534,9 +535,9 @@ async def release_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 def load_settings() -> Settings:
     load_dotenv(BASE_DIR / ".env")
-    token = os.getenv("8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk", "").strip() or BOT_TOKEN
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or BOT_TOKEN
     members = parse_id_list(os.getenv("TEAM_MEMBER_IDS", ""))
-    admins = parse_id_list(os.getenv("7097197639", ""))
+    admins = parse_id_list(ADMIN_USER_IDS)
     chat_id = os.getenv("ALLOWED_CHAT_ID", "").strip()
     duplicate_message = os.getenv(
         "DUPLICATE_MESSAGE",
