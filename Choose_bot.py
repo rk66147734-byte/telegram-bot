@@ -1,5 +1,5 @@
 """Small private Telegram bot for preventing duplicate Facebook client claims."""
-
+GSM_TELEGRAM_BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
 from __future__ import annotations
 
 import asyncio
@@ -28,6 +28,9 @@ except ModuleNotFoundError:  # Lets the pure SQLite tests run before package ins
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "claims.db"
+# New users must send this code with /join <code> to register.
+# Change this value to your own private code before deployment.
+JOIN_CODE = "CHANGE_THIS_JOIN_CODE"
 NEW_CLAIM = "➕ নতুন Client"
 SEARCH = "🔍 খুঁজুন"
 HISTORY = "📜 History"
@@ -111,6 +114,13 @@ class ClaimStore:
     def initialize(self) -> None:
         with self.session() as db:
             db.execute("""
+                CREATE TABLE IF NOT EXISTS members (
+                    user_id INTEGER PRIMARY KEY,
+                    user_name TEXT NOT NULL,
+                    joined_at TEXT NOT NULL
+                )
+            """)
+            db.execute("""
                 CREATE TABLE IF NOT EXISTS claims (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     facebook_key TEXT NOT NULL,
@@ -131,6 +141,22 @@ class ClaimStore:
             if "screenshot_file_id" not in columns:
                 db.execute("ALTER TABLE claims ADD COLUMN screenshot_file_id TEXT")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_claim_key ON claims(facebook_key) WHERE released_at IS NULL")
+
+    def add_member(self, user_id: int, name: str) -> None:
+        with self.session() as db:
+            db.execute(
+                """INSERT INTO members (user_id, user_name, joined_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET user_name = excluded.user_name""",
+                (user_id, name, utc_now()),
+            )
+
+    def is_member(self, user_id: int) -> bool:
+        with self.session() as db:
+            return db.execute(
+                "SELECT 1 FROM members WHERE user_id = ?",
+                (user_id,),
+            ).fetchone() is not None
 
     def claim(self, key: str, original: str, user_id: int, name: str, profile_name: str = "", screenshot_file_id: str = "") -> tuple[bool, sqlite3.Row]:
         try:
@@ -181,12 +207,6 @@ class ClaimStore:
             """, (utc_now(), admin_id, admin_name, claim_id))
             return result.rowcount == 1
 
-    def delete(self, claim_id: int) -> bool:
-        with self.session() as db:
-            result = db.execute("DELETE FROM claims WHERE id = ?", (claim_id,))
-            return result.rowcount == 1
-
-
 def display_name(update: Update) -> str:
     user = update.effective_user
     return user.full_name or user.username or str(user.id)
@@ -228,8 +248,11 @@ def authorized(settings: Settings, update: Update, admin: bool = False) -> bool:
         return False
     if settings.allowed_chat_id is not None and chat.id != settings.allowed_chat_id:
         return False
-    return user.id in (settings.admins if admin else settings.members)
+    return user.id in settings.admins if admin else True
 
+
+def require_member(context: ContextTypes.DEFAULT_TYPE, update: Update) -> bool:
+    return context.application.bot_data["store"].is_member(update.effective_user.id)
 
 def main_menu():
     return ReplyKeyboardMarkup(
@@ -302,11 +325,35 @@ async def show_draft_status(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
 
 
+async def join_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if not user:
+        return
+
+    code = command_arg(update).strip()
+    if not code:
+        await update.effective_message.reply_text("ব্যবহার: /join <join code>")
+        return
+
+    if code != JOIN_CODE:
+        await update.effective_message.reply_text("❌ Join code ভুল। সঠিক code দিয়ে আবার চেষ্টা করুন।")
+        return
+
+    store: ClaimStore = context.application.bot_data["store"]
+    store.add_member(user.id, display_name(update))
+    await update.effective_message.reply_text(
+        "✅ আপনি সফলভাবে team-এ add হয়েছেন। এখন /start চাপুন।",
+        reply_markup=main_menu(),
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    settings: Settings = context.application.bot_data["settings"]
-    if not authorized(settings, update):
+    store: ClaimStore = context.application.bot_data["store"]
+    if not store.is_member(update.effective_user.id):
         await update.effective_message.reply_text(
-            f"আপনি এখনও team-এ add হননি।\nআপনার Telegram ID: {update.effective_user.id}\nএই number-টি admin-কে পাঠান।"
+            "আপনি এখনও team-এ registered নন।\n"
+            "Admin-এর দেওয়া join code দিয়ে লিখুন:\n"
+            "/join <join code>"
         )
         return
     await update.effective_message.reply_text(
@@ -317,11 +364,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
-    if not authorized(settings, update):
-        await reject(update)
+    if not require_member(context, update):
+        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
         return
-    extra = "\nAdmins: /release <claim number>, /delete <claim number>" if update.effective_user.id in settings.admins else ""
-    await update.effective_message.reply_text("➕ নতুন Client চাপুন, তারপর নাম/link লিখুন বা screenshot পাঠান।\n🔍 খুঁজুন চাপুন, তারপর client-এর নাম, Facebook ID বা link লিখুন। Search পুরো database-এ duplicate check করবে।\n📜 History চাপুন: member শুধু নিজের claim দেখবে; admin সব claim দেখতে পারবে." + extra, reply_markup=main_menu())
+    extra = "\nAdmins: /release <claim number>" if update.effective_user.id in settings.admins else ""
+    await update.effective_message.reply_text("➕ নতুন Client চাপুন, তারপর নাম/link লিখুন বা screenshot পাঠান।\n🔍 খুঁজুন চাপুন, তারপর client-এর নাম, Facebook ID বা link লিখুন। Search পুরো database-এ duplicate check করবে।\n📜 History চাপুন: প্রত্যেক member শুধু নিজের claim history দেখবে; admin সব claim দেখতে পারবে." + extra, reply_markup=main_menu())
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -352,8 +399,8 @@ async def photo_claim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def save_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, screenshot_file_id: str = "", original: str | None = None) -> None:
     settings: Settings = context.application.bot_data["settings"]
-    if not authorized(settings, update):
-        await reject(update)
+    if not require_member(context, update):
+        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
         return
     original = command_arg(update) if original is None else original
     try:
@@ -374,8 +421,8 @@ async def save_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, screens
 async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Button-driven flow so teammates do not need to remember slash commands."""
     settings: Settings = context.application.bot_data["settings"]
-    if not authorized(settings, update):
-        await reject(update)
+    if not require_member(context, update):
+        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
         return
     text = update.effective_message.text.strip()
     if text == NEW_CLAIM:
@@ -429,8 +476,8 @@ async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
-    if not authorized(settings, update):
-        await reject(update)
+    if not require_member(context, update):
+        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
         return
     term = command_arg(update)
     if not term:
@@ -442,8 +489,8 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
-    if not authorized(settings, update):
-        await reject(update)
+    if not require_member(context, update):
+        await reject(update, "আপনি registered নন। আগে /join <join code> ব্যবহার করুন।")
         return
 
     store: ClaimStore = context.application.bot_data["store"]
@@ -481,36 +528,19 @@ async def release_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.effective_message.reply_text("Claim released; its history was kept." if changed else "Active claim not found.")
 
 
-async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    settings: Settings = context.application.bot_data["settings"]
-    if not authorized(settings, update, admin=True):
-        await reject(update, "Only configured admins can delete claims.")
-        return
-    try:
-        claim_id = int(command_arg(update))
-    except ValueError:
-        await update.effective_message.reply_text("Usage: /delete <claim number>. This permanently removes its history.")
-        return
-    deleted = context.application.bot_data["store"].delete(claim_id)
-    await update.effective_message.reply_text("Claim permanently deleted." if deleted else "Claim not found.")
-
-
 def load_settings() -> Settings:
     load_dotenv(BASE_DIR / ".env")
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    token = os.getenv("8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk", "").strip()
     members = parse_id_list(os.getenv("TEAM_MEMBER_IDS", ""))
-    admins = parse_id_list(os.getenv("ADMIN_USER_IDS", ""))
+    admins = parse_id_list(os.getenv("7097197639", ""))
     chat_id = os.getenv("ALLOWED_CHAT_ID", "").strip()
     duplicate_message = os.getenv(
         "DUPLICATE_MESSAGE",
         "🚫 Duplicate Client Alert / ডুপ্লিকেট ক্লায়েন্ট সতর্কতা\n\nএই client-টি আগে থেকেই {claimed_by}-এর নেওয়া আছে।\nThis client is already claimed by {claimed_by}.\n\n✨ দয়া করে নতুন client দিন / Please choose another client.",
     ).strip()
     if not token or token == "put_your_botfather_token_here":
-        raise RuntimeError("Set TELEGRAM_BOT_TOKEN in your local .env file.")
-    if not members:
-        logging.warning("TEAM_MEMBER_IDS is empty: only /whoami and /chatid are usable until you configure the team.")
-    if not admins.issubset(members):
-        raise RuntimeError("Every ADMIN_USER_ID must also be in TEAM_MEMBER_IDS.")
+        raise RuntimeError("Set 8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk in your local .env file.")
+    # TEAM_MEMBER_IDS is kept for backward compatibility, but new members are stored in claims.db.
     return Settings(token, members, admins, int(chat_id) if chat_id else None, duplicate_message)
 
 
@@ -521,6 +551,7 @@ def main() -> None:
     store = ClaimStore(DB_PATH)
     app = Application.builder().token(settings.token).build()
     app.bot_data.update(settings=settings, store=store)
+    app.add_handler(CommandHandler("join", join_command))
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("whoami", whoami))
@@ -531,7 +562,6 @@ def main() -> None:
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("history", history_command))
     app.add_handler(CommandHandler("release", release_command))
-    app.add_handler(CommandHandler("delete", delete_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_input))
     logging.info("Bot is starting. Press Ctrl+C to stop.")
     # Python 3.14 no longer creates an event loop automatically in the main thread.
