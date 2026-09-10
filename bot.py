@@ -122,6 +122,7 @@ class ClaimStore:
         with self.session() as db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS members (
+
                     user_id INTEGER PRIMARY KEY,
                     user_name TEXT NOT NULL,
                     joined_at TEXT NOT NULL
@@ -148,6 +149,43 @@ class ClaimStore:
             if "screenshot_file_id" not in columns:
                 db.execute("ALTER TABLE claims ADD COLUMN screenshot_file_id TEXT")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS active_claim_key ON claims(facebook_key) WHERE released_at IS NULL")
+    def list_members(self):
+        try:
+            rows = self.conn.execute(
+                "SELECT user_id, username, full_name, COALESCE(status, 'active') "
+                "FROM members ORDER BY user_id"
+            ).fetchall()
+            return [
+                {"user_id": r[0], "username": r[1], "full_name": r[2], "status": r[3]}
+                for r in rows
+            ]
+        except Exception:
+            rows = self.conn.execute(
+                "SELECT user_id, username, full_name FROM members ORDER BY user_id"
+            ).fetchall()
+            return [
+                {"user_id": r[0], "username": r[1], "full_name": r[2], "status": "active"}
+                for r in rows
+            ]
+
+    def set_member_status(self, user_id, status):
+        self.conn.execute(
+            "UPDATE members SET status = ? WHERE user_id = ?",
+            (status, user_id),
+        )
+        self.conn.commit()
+
+    def member_status(self, user_id):
+        try:
+            row = self.conn.execute(
+                "SELECT COALESCE(status, 'active') FROM members WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
+
+
 
     def add_member(self, user_id: int, name: str) -> None:
         with self.session() as db:
@@ -709,6 +747,8 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_input))
 
     logging.info("Bot is starting. Press Ctrl+C to stop.")
+    app.add_handler(CommandHandler("adminusers", admin_users))
+    app.add_handler(CallbackQueryHandler(admin_user_action, pattern=r"^admin_(ban|unban)_\\d+$"))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
