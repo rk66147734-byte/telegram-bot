@@ -467,7 +467,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     store: ClaimStore = context.application.bot_data["store"]
     active = store.active_member_count()
     total = len(store.list_members())
-    rows = store.recent_all(50)
+    rows = store.recent_all(500)
 
     await update.effective_message.reply_text(
         f"👑 ADMIN PANEL\n\n👥 Active Users: {active}\n👤 Total Registered: {total}\n📜 History Records: {len(rows)}",
@@ -696,7 +696,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     admin_access = is_admin(context, update)
 
     # Admins may review the team history; regular members can only see their own.
-    rows = store.recent_all(50) if admin_access else store.recent_for_user(update.effective_user.id, 20)
+    rows = store.recent_all(500) if admin_access else store.recent_for_user(update.effective_user.id, 20)
 
     if not rows:
         title = "📜 All History / সব History" if admin_access else "📜 My History / আমার claim history"
@@ -741,7 +741,7 @@ async def admin_history_callback(update: Update, context: ContextTypes.DEFAULT_T
     if not rows:
         await query.edit_message_text("📜 এখনো কোনো claim history নেই।")
         return
-    full_text = "📜 Latest 50 Claims / সর্বশেষ ৫০টি History\n\n" + "\n\n".join(row_text(row) for row in rows)
+    full_text = "📜 Latest 500 Claims / সর্বশেষ ৫০০টি History\n\n" + "\n\n".join(row_text(row) for row in rows)
     # Chunked for the same reason as history_command: with enough claims this
     # text blows past Telegram's per-message limit, and edit_message_text
     # can only carry the first chunk — the rest go out as follow-up messages.
