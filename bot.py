@@ -16,7 +16,9 @@ from urllib.parse import urlparse
 TEAM_JOIN_CODE = "0scam"
 ADMIN_JOIN_CODE = "km195770"
 
+# Put your new (rotated) BotFather token here, between the quotes.
 BOT_TOKEN = "8934451968:AAEZ_w598BsHL17JgPkxmjIosu5_lxuOLKk"
+
 ADMIN_USER_IDS = ""
 try:
     from dotenv import load_dotenv
@@ -35,6 +37,11 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "claims.db"
 # New users must send this code with /join <code> to register.
 # Change this value to your own private code before deployment.
+
+# Telegram caps a single message at 4096 characters. We use a small buffer
+# below that so history messages get split into multiple sends instead of
+# silently failing with "Message is too long" once claim history grows.
+TELEGRAM_MESSAGE_LIMIT = 4000
 
 NEW_CLAIM = "➕ নতুন Client"
 SEARCH = "🔍 খুঁজুন"
@@ -87,6 +94,30 @@ def normalise_facebook_target(raw: str) -> str:
     if parts[0] == "pages" and len(parts) >= 3:
         return parts[-1]
     return parts[0]
+
+
+def chunk_text(full_text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Split a long message on blank lines so each chunk fits Telegram's limit."""
+    parts = full_text.split("\n\n")
+    chunks: list[str] = []
+    current = ""
+    for part in parts:
+        candidate = f"{current}\n\n{part}" if current else part
+        if len(candidate) > limit and current:
+            chunks.append(current)
+            current = part
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [full_text[:limit]]
+
+
+async def send_long_text(message, text: str, reply_markup=None) -> None:
+    """Send text as one or more messages, staying under Telegram's length limit."""
+    chunks = chunk_text(text)
+    for i, chunk in enumerate(chunks):
+        await message.reply_text(chunk, reply_markup=reply_markup if i == len(chunks) - 1 else None)
 
 
 @dataclass(frozen=True)
@@ -253,20 +284,20 @@ def display_name(update: Update) -> str:
 
 
 def row_text(row: sqlite3.Row) -> str:
-    status = "🟢 Active / চালু" if not row["released_at"] else "🟡 Released / ছেড়ে দেওয়া হয়েছে"
-    profile_name = f"\n👤 Client name / ক্লায়েন্ট: {row['profile_name']}" if row["profile_name"] else ""
+    status = "🟢 Active / চালু" if not row["released_at"] else "🟡 Released / ছেড়ে দেওয়া হয়েছে"
+    profile_name = f"\n👤 Client name / ক্লায়েন্ট: {row['profile_name']}" if row["profile_name"] else ""
     screenshot = "\n🖼️ Screenshot / ছবি: Saved / সংরক্ষিত" if row["screenshot_file_id"] else ""
     link_match = re.search(r"(?:https?://)?(?:www\.)?(?:facebook\.com|fb\.com)/\S+", row["original_input"], re.I)
     facebook_link = f"\n🔗 Facebook link: {link_match.group(0)}" if link_match else ""
-    return f"🧾 Claim #{row['id']} | {status}{profile_name}{facebook_link}{screenshot}\n🙋 Claimed by / যিনি নিয়েছেন: {row['claimed_by_name']}\n🕐 সময়: {row['claimed_at']}"
+    return f"🧾 Claim #{row['id']} | {status}{profile_name}{facebook_link}{screenshot}\n🙋 Claimed by / যিনি নিয়েছেন: {row['claimed_by_name']}\n🕐 সময়: {row['claimed_at']}"
 
 def search_result_text(row: sqlite3.Row) -> str:
     """Compact global-search result: enough to prevent duplicate claims without exposing a history list."""
-    status = "🟢 Active / চালু" if not row["released_at"] else "🟡 Released / ছেড়ে দেওয়া হয়েছে"
-    profile_name = f"\n👤 Client name / ক্লায়েন্ট: {row['profile_name']}" if row["profile_name"] else ""
+    status = "🟢 Active / চালু" if not row["released_at"] else "🟡 Released / ছেড়ে দেওয়া হয়েছে"
+    profile_name = f"\n👤 Client name / ক্লায়েন্ট: {row['profile_name']}" if row["profile_name"] else ""
     link_match = re.search(r"(?:https?://)?(?:www\.)?(?:facebook\.com|fb\.com)/\S+", row["original_input"], re.I)
     facebook_link = f"\n🔗 Facebook link: {link_match.group(0)}" if link_match else ""
-    return f"🧾 Claim #{row['id']} | {status}{profile_name}{facebook_link}\n🙋 Claimed by / যিনি নিয়েছেন: {row['claimed_by_name']}\n🕐 Claim time: {row['claimed_at']}"
+    return f"🧾 Claim #{row['id']} | {status}{profile_name}{facebook_link}\n🙋 Claimed by / যিনি নিয়েছেন: {row['claimed_by_name']}\n🕐 Claim time: {row['claimed_at']}"
 
 
 def duplicate_reply(template: str, row: sqlite3.Row) -> str:
@@ -368,8 +399,8 @@ def extract_client_fields(text: str) -> tuple[str, str]:
 
 async def show_draft_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     draft = context.user_data["draft"]
-    name = draft.get("name") or "এখনও দেওয়া হয়নি"
-    link = draft.get("link") or "এখনও দেওয়া হয়নি"
+    name = draft.get("name") or "এখনও দেওয়া হয়নি"
+    link = draft.get("link") or "এখনও দেওয়া হয়নি"
     screenshot = "আছে" if draft.get("screenshot") else "নেই"
     await update.effective_message.reply_text(
         f"এখন পর্যন্ত:\nনাম: {name}\nLink: {link}\nScreenshot: {screenshot}\n\nআরও তথ্য পাঠান, অথবা ✅ Save Client চাপুন।",
@@ -422,7 +453,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = (
             "👋 Welcome!\n\n"
             "আপনি এখনও team-এ registered নন।\n"
-            "🔐 শুধু Team Code পাঠান। সঠিক code হলে automatically login হয়ে যাবেন।"
+            "🔐 শুধু Team Code পাঠান। সঠিক code হলে automatically login হয়ে যাবেন।"
         )
         markup = None
 
@@ -534,7 +565,7 @@ async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not require_member(context, update):
         await reject(
             update,
-            "🔒 আগে Join Team চাপুন এবং Admin-এর দেওয়া join code দিন।"
+            "🔒 আগে Join Team চাপুন এবং Admin-এর দেওয়া join code দিন।"
         )
         return
 
@@ -552,7 +583,7 @@ async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context.user_data.pop("waiting_for", None)
         context.user_data.pop("draft", None)
         await update.effective_message.reply_text(
-            "নতুন client যোগ করা বাতিল হয়েছে।",
+            "নতুন client যোগ করা বাতিল হয়েছে।",
             reply_markup=main_menu(context, update),
         )
         return
@@ -621,7 +652,7 @@ async def button_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if waiting_for == "search":
         rows = context.application.bot_data["store"].search(text.lower())
         await update.effective_message.reply_text(
-            "কোনো matching client পাওয়া যায়নি।"
+            "কোনো matching client পাওয়া যায়নি।"
             if not rows
             else "🔍 Search result / খোঁজার ফল\n\n"
                  + "\n\n".join(search_result_text(row) for row in rows),
@@ -652,7 +683,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.effective_message.reply_text("Usage: /search <username, ID, or part of a Facebook URL>")
         return
     rows = context.application.bot_data["store"].search(term.lower())
-    await update.effective_message.reply_text("কোনো matching client পাওয়া যায়নি।" if not rows else "🔍 Search result / খোঁজার ফল\n\n" + "\n\n".join(search_result_text(row) for row in rows))
+    await update.effective_message.reply_text("কোনো matching client পাওয়া যায়নি।" if not rows else "🔍 Search result / খোঁজার ফল\n\n" + "\n\n".join(search_result_text(row) for row in rows))
 
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -670,13 +701,16 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not rows:
         title = "📜 All History / সব History" if admin_access else "📜 My History / আমার claim history"
         await update.effective_message.reply_text(
-            f"{title}\n\nকোনো claim পাওয়া যায়নি।",
+            f"{title}\n\nকোনো claim পাওয়া যায়নি।",
             reply_markup=main_menu(context, update),
         )
         return
 
     title = "📜 All History / সব History" if admin_access else "📜 My History / আমার claim history"
-    await update.effective_message.reply_text(
+    # Chunked because a large team can easily have 30+ history entries,
+    # which pushes the combined text past Telegram's 4096-character limit.
+    await send_long_text(
+        update.effective_message,
         title + "\n\n" + "\n\n".join(row_text(row) for row in rows),
         reply_markup=main_menu(context, update),
     )
@@ -707,10 +741,14 @@ async def admin_history_callback(update: Update, context: ContextTypes.DEFAULT_T
     if not rows:
         await query.edit_message_text("📜 এখনো কোনো claim history নেই।")
         return
-    await query.edit_message_text(
-        "📜 Latest 50 Claims / সর্বশেষ ৫০টি History\n\n"
-        + "\n\n".join(row_text(row) for row in rows)
-    )
+    full_text = "📜 Latest 50 Claims / সর্বশেষ ৫০টি History\n\n" + "\n\n".join(row_text(row) for row in rows)
+    # Chunked for the same reason as history_command: with enough claims this
+    # text blows past Telegram's per-message limit, and edit_message_text
+    # can only carry the first chunk — the rest go out as follow-up messages.
+    chunks = chunk_text(full_text)
+    await query.edit_message_text(chunks[0])
+    for chunk in chunks[1:]:
+        await query.message.reply_text(chunk)
 
 
 async def admin_users_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -785,6 +823,16 @@ async def admin_user_action(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(f"✅ User {uid} unbanned.")
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log unhandled exceptions instead of letting them fail silently.
+
+    Without this, things like a too-long history message would raise inside
+    a handler and just vanish into the terminal log with no user-facing sign
+    that anything went wrong.
+    """
+    logging.exception("Unhandled error while processing an update", exc_info=context.error)
+
+
 def load_settings() -> Settings:
     load_dotenv(BASE_DIR / ".env")
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or BOT_TOKEN
@@ -793,10 +841,10 @@ def load_settings() -> Settings:
     chat_id = os.getenv("ALLOWED_CHAT_ID", "").strip()
     duplicate_message = os.getenv(
         "DUPLICATE_MESSAGE",
-        "🚫 Duplicate Client Alert / ডুপ্লিকেট ক্লায়েন্ট সতর্কতা\n\nএই client-টি আগে থেকেই {claimed_by}-এর নেওয়া আছে।\nThis client is already claimed by {claimed_by}.\n\n✨ দয়া করে নতুন client দিন / Please choose another client.",
+        "🚫 Duplicate Client Alert / ডুপ্লিকেট ক্লায়েন্ট সতর্কতা\n\nএই client-টি আগে থেকেই {claimed_by}-এর নেওয়া আছে।\nThis client is already claimed by {claimed_by}.\n\n✨ দয়া করে নতুন client দিন / Please choose another client.",
     ).strip()
-    if not token or token == "put_your_botfather_token_here":
-        raise RuntimeError("Set TELEGRAM_BOT_TOKEN in your local .env file.")
+    if not token or token == "PUT_YOUR_NEW_TOKEN_HERE":
+        raise RuntimeError("Set your token in BOT_TOKEN at the top of bot.py, or in a local .env file.")
     # TEAM_MEMBER_IDS is kept for backward compatibility, but new members are stored in claims.db.
     return Settings(token, members, admins, int(chat_id) if chat_id else None, duplicate_message)
 
@@ -823,10 +871,12 @@ def main() -> None:
     app.add_handler(CommandHandler("release", release_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_input))
 
-    logging.info("Bot is starting. Press Ctrl+C to stop.")
     app.add_handler(CallbackQueryHandler(admin_history_callback, pattern=r"^admin_history$"))
     app.add_handler(CallbackQueryHandler(admin_users_callback, pattern=r"^admin_users$"))
     app.add_handler(CallbackQueryHandler(admin_user_action, pattern=r"^admin_(ban|unban)_\d+$"))
+    app.add_error_handler(error_handler)
+
+    logging.info("Bot is starting. Press Ctrl+C to stop.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
